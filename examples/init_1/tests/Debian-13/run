@@ -1,0 +1,113 @@
+#!/bin/bash
+
+DEBIAN_FRONTEND="noninteractive"
+MACHINE_NAME="$(cat /etc/hostname)"
+WORKING_DIR="/$(realpath --relative-to=/ $(dirname $0))"
+RESOURSE_DIR="$WORKING_DIR/Resources"
+[ ! -d $RESOURSE_DIR ] && mkdir -pv $RESOURSE_DIR
+
+### ENABLE SECUREBOOT BEGIN
+BIOS_DIR=$RESOURSE_DIR/bios
+[ -d $BIOS_DIR ] || mkdir -pv $BIOS_DIR
+OVMF_VARS_ORIG="/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
+OVMF_VARS="$BIOS_DIR/$(basename $OVMF_VARS_ORIG)"
+[ -f "$OVMF_VARS" ] || ovmf=y
+if [ "$ovmf" = "y" ]; then
+  [ -e "$OVMF_VARS" ] || cp -rfv "$OVMF_VARS_ORIG" "$OVMF_VARS" || exit $?
+fi
+### ENABLE SECUREBOOT END
+
+CD_ROOM="/media/xxx/sdc2/xxx/Downloads/ISO/debian-live-13.0.0-amd64-gnome.iso"
+MAC_ADDR=$(printf '52:54:00:%02x:%02x:%02x\n' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))
+IF_NAME=qemu_tap_0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --ifname)
+  		IF_NAME="$2"
+        [ -z "$IF_NAME" ] && echo "Usage: $(basename $0) --ifname <qemu_tap_0>" && exit 1
+      shift 2
+      ;;
+
+    --ifname=*)
+        IF_NAME="${1#*=}"
+        [ -z "$IF_NAME" ] && echo "Usage: $(basename $0) --ifname <qemu_tap_0>" && exit 1
+        shift
+        ;;
+    *)
+      echo "Usage: $(basename $0) --ifname <qemu_tap_0>"
+      exit 127
+      ;;
+  esac
+done
+
+if [ ! -d "/sys/class/net/$IF_NAME" ]; then
+  echo "⚠️  Network interface '$IF_NAME' does not exist."
+  echo
+  echo "👉 What you can do:"
+  echo "   - Make sure the interface name is correct"
+  echo "   - Run the following command to create it:"
+  echo
+  echo "     setup --qemu-tap $IF_NAME && run --ifname $IFNAME"
+  echo
+  exit 1
+fi
+
+args=(
+  -name "${MACHINE_NAME}_${MAC_ADDR}"
+  -machine q35,smm=on,kernel-irqchip=split -device intel-iommu,intremap=on
+
+  ### CPU BEGIN
+  -cpu host,kvm=on
+  -enable-kvm
+  # -smp cores=1,threads=1,sockets=1
+  -smp $(nproc)
+  ### CPU END
+
+  ### MEMORY BEGIN
+  -m $((1024 * 4))
+  # -mem-path /dev/shm
+  ### MEMORY BEGIN
+
+  ### BIOS BEGIN
+  -object rng-random,filename=/dev/urandom,id=rng0
+  -device virtio-rng-pci,rng=rng0
+  -global driver=cfi.pflash01,property=secure,value=on
+  -drive if=pflash,format=raw,unit=0,file=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd,readonly=on
+  -drive if=pflash,format=raw,unit=1,file="$OVMF_VARS"
+  -boot order=c,menu=on ## F2 ENTER TO BIOS
+  ### BIOS END
+
+  ### NETWORK BEGIND
+  ## BRIDGE BEGIN
+  -netdev tap,id=net_0,ifname=$IF_NAME,script=no,downscript=no
+  -device virtio-net-pci,netdev=net_0,mac=$MAC_ADDR
+  ## BRIDGE END
+  ### NETWORK END
+
+  ### CDROM BEGIN
+  $([ -f "$CD_ROOM" ] && echo "-cdrom ${CD_ROOM}")
+  ### CDROM END
+
+  ### DISK BEGIN
+  ## IMG FILE
+  # $([ -f "$IMG_DISK" ] && echo "-drive file="$IMG_DISK",format=raw")
+  -drive file="$RESOURSE_DIR/disk_1.img",format=raw
+  -drive file="$RESOURSE_DIR/disk_2.img",format=raw
+  # -drive file=/dev/md0,format=raw
+  ### DISK END
+
+  ### VGA BEGIN
+	-device virtio-vga-gl
+
+  ## FOR LINUX
+  -display gtk,gl=on
+  ### VGA END
+
+  -kernel "/media/xxx/sdc2/xxx/Git/x-syaifullah-x/linux-kernel-lenovo-B490/Sources/linux-6.18.6-xanmod1-qemu/arch/x86/boot/bzImage"
+  -append "quiet loop.max_part=4"
+  -initrd "$WORKING_DIR/../../out/init.cpio"
+
+  -monitor mon:stdio
+
+)
+qemu-system-x86_64 "${args[@]}"
