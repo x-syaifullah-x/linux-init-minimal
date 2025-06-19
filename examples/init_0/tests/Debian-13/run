@@ -1,0 +1,87 @@
+#!/bin/bash
+
+DEBIAN_FRONTEND="noninteractive"
+MACHINE_NAME="$(cat /etc/hostname)"
+WORKING_DIR="/$(realpath --relative-to=/ $(dirname $0))"
+RESOURSE_DIR="$WORKING_DIR/Resources"
+[ ! -d $RESOURSE_DIR ] && mkdir -pv $RESOURSE_DIR
+
+### ENABLE SECUREBOOT BEGIN
+BIOS_DIR=$RESOURSE_DIR/bios
+[ -d $BIOS_DIR ] || mkdir -pv $BIOS_DIR
+OVMF_CODE_ORIG="/usr/share/OVMF/OVMF_CODE_4M.secboot.fd"
+OVMF_CODE="$BIOS_DIR/$(basename $OVMF_CODE_ORIG)"
+OVMF_VARS_ORIG="/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
+OVMF_VARS="$BIOS_DIR/$(basename $OVMF_VARS_ORIG)"
+[ -f "$OVMF_CODE" ] || ovmf=y
+[ -f "$OVMF_VARS" ] || ovmf=y
+if [ "$ovmf" = "y" ]; then
+	apt-get install --no-install-suggests --no-install-recommends ovmf -y 2>&1 >/dev/null || exit $?
+  [ -e "$OVMF_CODE" ] || cp -rfv "$OVMF_CODE_ORIG" "$OVMF_CODE"
+  [ -e "$OVMF_VARS" ] || cp -rfv "$OVMF_VARS_ORIG" "$OVMF_VARS"
+fi
+### ENABLE SECUREBOOT END
+
+CD_ROOM=/media/xxx/sdc2/xxx/Downloads/ISO/debian-live-13.0.0-amd64-gnome.iso
+MAC_ADDR=$(printf '52:54:00:%02x:%02x:%02x\n' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))
+IF_NAME=qemu_tap_0
+args=(
+  -name "${MACHINE_NAME}_${MAC_ADDR}"
+  -machine q35,smm=on,kernel-irqchip=split -device intel-iommu,intremap=on
+
+  ### CPU BEGIN
+  -cpu host,kvm=on
+  -enable-kvm
+  # -smp cores=1,threads=1,sockets=1
+  -smp $(nproc)
+  ### CPU END
+
+  ### MEMORY BEGIN
+  -m $((1024 * 4))
+  # -mem-path /dev/shm
+  ### MEMORY BEGIN
+
+  ### BIOS BEGIN
+  -object rng-random,filename=/dev/urandom,id=rng0
+  -device virtio-rng-pci,rng=rng0
+  -global driver=cfi.pflash01,property=secure,value=on
+  -drive if=pflash,format=raw,unit=0,file="$OVMF_CODE",readonly=on
+  -drive if=pflash,format=raw,unit=1,file="$OVMF_VARS",readonly=on
+  -boot order=c,menu=on ## F2 ENTER TO BIOS
+  ### BIOS END
+
+  ### NETWORK BEGIND
+  ## BRIDGE BEGIN
+  -netdev tap,id=net_0,ifname=$IF_NAME,script=no,downscript=no
+  -device virtio-net-pci,netdev=net_0,mac=$MAC_ADDR
+  ## BRIDGE END
+  ### NETWORK END
+
+  ### CDROM BEGIN
+  $([ -f "$CD_ROOM" ] && echo "-cdrom ${CD_ROOM}")
+  ### CDROM END
+
+  ### DISK BEGIN
+  ## IMG FILE
+  # $([ -f "$IMG_DISK" ] && echo "-drive file="$IMG_DISK",format=raw")
+  # -drive file=/dev/md0,format=raw
+  -drive file="$RESOURSE_DIR/disks/disk.img",format=raw
+  -drive file="$RESOURSE_DIR/disks/raid_0/disk_1.img",format=raw
+  -drive file="$RESOURSE_DIR/disks/raid_0/disk_2.img",format=raw
+  ### DISK END
+
+  ### VGA BEGIN
+	-device virtio-vga-gl
+
+  ## FOR LINUX
+  -display gtk,gl=on
+  ### VGA END
+
+  -kernel "/media/xxx/sdc2/xxx/Git/x-syaifullah-x/linux-kernel-lenovo-B490/Sources/linux-6.18.0-xanmod1-qemu/arch/x86/boot/bzImage"
+  -append "quiet"
+  -initrd "$WORKING_DIR/../../out/init.cpio"
+
+  -monitor mon:stdio
+
+)
+qemu-system-x86_64 "${args[@]}"
