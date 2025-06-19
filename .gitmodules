@@ -1,0 +1,4 @@
+[submodule "syscall"]
+	path = syscall
+	url = ssh://git@github.com/x-syaifullah-x/syscall-linux
+	branch = main
